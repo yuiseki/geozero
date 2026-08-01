@@ -7,9 +7,9 @@ use crate::shp::Error;
 use crate::shp::point_z::BBoxZ;
 
 pub(crate) const HEADER_SIZE: i32 = 100;
-const FILE_CODE: i32 = 9994;
+pub(crate) const FILE_CODE: i32 = 9994;
 /// Size of reserved bytes in the header, that have do defined use
-const SIZE_OF_SKIP: usize = size_of::<i32>() * 5;
+pub(crate) const SIZE_OF_SKIP: usize = size_of::<i32>() * 5;
 
 /// struct representing the Header of a shapefile
 /// can be retrieved via the reader used to read
@@ -52,6 +52,12 @@ impl Header {
         source.read_exact(&mut skip)?;
 
         let file_length_16_bit = source.read_i32::<BigEndian>()?;
+        // A shapefile cannot be shorter than its own header, so anything below
+        // that is either negative (sign-extends to ~1.8e19 when the readers cast
+        // it `as usize`) or claims a file that stops inside the header.
+        if file_length_16_bit < HEADER_SIZE / 2 {
+            return Err(Error::InvalidShapeRecordSize);
+        }
         let version = source.read_i32::<LittleEndian>()?;
         let shape_type = ShapeType::read_from(&mut source)?;
 
@@ -207,5 +213,41 @@ mod tests {
 
         src.seek(SeekFrom::Start(0)).unwrap();
         assert!(Header::read_from(&mut src).is_err());
+    }
+
+    /// A well-formed 100-byte main header with a caller-chosen `file_length`
+    fn raw_header(file_length_16_bit: i32) -> Vec<u8> {
+        let mut h = Vec::with_capacity(HEADER_SIZE as usize);
+        h.extend_from_slice(&FILE_CODE.to_be_bytes());
+        h.extend_from_slice(&[0u8; SIZE_OF_SKIP]);
+        h.extend_from_slice(&file_length_16_bit.to_be_bytes());
+        h.extend_from_slice(&1000i32.to_le_bytes()); // version
+        h.extend_from_slice(&(ShapeType::Polygon as i32).to_le_bytes());
+        h.extend_from_slice(&[0u8; 64]); // 8 x f64 bbox
+        assert_eq!(h.len(), HEADER_SIZE as usize);
+        h
+    }
+
+    #[test]
+    fn file_length_shorter_than_the_header_is_rejected() {
+        // Left unchecked these sign-extend to ~1.8e19 (negative) or claim a file
+        // that ends inside its own header, both of which the readers turn into a
+        // bogus iteration extent / record count.
+        for file_length in [i32::MIN, -1, 0, 1, HEADER_SIZE / 2 - 1] {
+            let bytes = raw_header(file_length);
+            assert!(
+                Header::read_from(&mut bytes.as_slice()).is_err(),
+                "file_length {file_length} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn header_only_file_length_is_accepted() {
+        // 50 words = the 100-byte header exactly: a valid, empty shapefile.
+        let bytes = raw_header(HEADER_SIZE / 2);
+        let hdr = Header::read_from(&mut bytes.as_slice()).unwrap();
+        assert_eq!(hdr.file_length, HEADER_SIZE / 2);
+        assert_eq!(hdr.shape_type, ShapeType::Polygon);
     }
 }

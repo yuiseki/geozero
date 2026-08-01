@@ -31,6 +31,9 @@
 * Updated to 2024 edition
 * Cleanup justfile, editor config, other minor non-coding aspects
 * Use `fast-mvt` for all MVT handling
+* Fix the `shp` reader iterators never terminating on a malformed or truncated file: an
+  error is now terminal instead of being yielded again forever, and the main header's
+  `file_length` is validated
 
 ## 0.14.0 - (2024-09-26)
 
